@@ -1,0 +1,17 @@
+apiVersion: v2
+name: authzmtls
+description: >-
+  Docker Engine API authorization plugin
+type: application
+
+version: 0.1.0
+appVersion: "0.1.0"
+
+keywords:
+  - docker
+  - authorization-plugin
+  - mtls
+  - security
+home: https://github.com/weishiuchang/authzmtls
+sources:
+  - https://github.com/weishiuchang/authzmtls

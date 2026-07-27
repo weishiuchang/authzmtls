@@ -1,0 +1,108 @@
+{{- $tlsEnabled := or .Values.tls.existingSecret (and .Values.tls.cert .Values.tls.key) }}
+{{- $tlsSecretName := .Values.tls.existingSecret | default (printf "%s-tls" (include "authzmtls.fullname" .)) }}
+{{- $port := include "authzmtls.containerPort" . }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "authzmtls.fullname" . }}
+  labels:
+    {{- include "authzmtls.labels" . | nindent 4 }}
+spec:
+  # Omitted entirely when autoscaling.enabled is true, so `helm upgrade`
+  # never fights the HPA back to a static replica count.
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicas }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "authzmtls.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "authzmtls.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        # Checksum-triggered rolling restart, since the process only
+        # re-reads config.yaml at startup and this Deployment has no
+        # SIGHUP-delivery mechanism of its own.
+        checksum/config: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "authzmtls.serviceAccountName" . }}
+      # authzmtls never calls the Kubernetes API, so no ServiceAccount
+      # token needs to be mounted in.
+      automountServiceAccountToken: false
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: authzmtls
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: {{ $port }}
+              protocol: TCP
+          # /Plugin.Activate is the Docker plugin discovery handshake -
+          # cheapest endpoint that proves the listener/handler chain is up.
+          # kubelet's httpGet probe doesn't verify TLS certs, so this works
+          # whether or not TLS is configured below.
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.probes.path }}
+              port: http
+              scheme: {{ if $tlsEnabled }}HTTPS{{ else }}HTTP{{ end }}
+            initialDelaySeconds: {{ .Values.probes.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.failureThreshold }}
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.probes.path }}
+              port: http
+              scheme: {{ if $tlsEnabled }}HTTPS{{ else }}HTTP{{ end }}
+            initialDelaySeconds: {{ .Values.probes.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.failureThreshold }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/authzmtls
+              readOnly: true
+            {{- if $tlsEnabled }}
+            - name: tls
+              mountPath: /etc/authzmtls/tls
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: config
+          secret:
+            secretName: {{ include "authzmtls.fullname" . }}
+        {{- if $tlsEnabled }}
+        - name: tls
+          secret:
+            secretName: {{ $tlsSecretName }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

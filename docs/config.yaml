@@ -1,0 +1,29 @@
+logging_level: info
+
+server:
+  listen_addr: "0.0.0.0:80"
+  metrics_path: /metrics
+  decision_timeout: 2s
+
+# User subject DN is used to lookup $USER and $GROUP from data sources.
+# If no data soures are defined then paths using $USER or $GROUP are not allowed.
+allowlist:
+  - /data
+  - /srv/app-data
+  # - /home/$USER/projects
+  # - /remote/$GROUP
+
+# list of users as retrieved from data sources to treat as admin: always allow all docker commands
+admin_users: []
+# list of groups as retrieved from data sources who's users are admins: always allow all docker commands
+admin_groups: []
+
+checks:
+  # `docker run --network=host ...`
+  host_network: allow
+  # `docker run --privileged ...`
+  privileged: allow
+  # `docker cp ...`
+  docker_cp: allow
+  # `docker exec ...`
+  docker_exec: allow

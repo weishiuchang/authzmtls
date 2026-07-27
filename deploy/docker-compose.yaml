@@ -1,0 +1,142 @@
+# docker compose -f deploy/docker-compose.yaml up --build -d
+# docker compose -f deploy/docker-compose.yaml logs -f authzmtls                                         # watch decisions
+#
+# docker compose -f deploy/docker-compose.yaml exec dind docker run -v /data/allowed:/mnt busybox true   # allowed
+# docker compose -f deploy/docker-compose.yaml exec dind docker run -v /etc:/mnt busybox true            # denied
+#
+# `dind`'s DOCKER_HOST/DOCKER_TLS_VERIFY/DOCKER_CERT_PATH (below) point the
+# `docker` CLI inside that container at its own nested dockerd, so the
+# `docker run ...` commands above need no extra flags.
+
+services:
+  authzmtls:
+    init: true
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      target: debug
+    image: authzmtls:dev
+    configs:
+      - source: authzmtls-config
+        target: /etc/authzmtls/config.yaml
+    volumes:
+      # allowlist.Canonicalize EvalSymlinks-resolves mount paths against
+      # *this* container's filesystem, not dind's - /data/allowed must
+      # exist here for the "allowed" demo command below to actually match.
+      - type: tmpfs
+        target: /data/allowed
+
+  dind:
+    init: true
+    image: docker:27-dind
+    privileged: true # required for a nested dockerd
+    depends_on: [authzmtls]
+    configs:
+      - source: dind-entrypoint
+        target: /usr/local/bin/dind-entrypoint.sh
+        mode: 0555
+      - source: authzmtls-plugin-spec
+        target: /etc/docker/plugins/authzmtls.json
+    entrypoint: ["/usr/local/bin/dind-entrypoint.sh"]
+    environment:
+      # dind listens on TLS 0.0.0.0:2376
+      DOCKER_HOST: tcp://localhost:2376
+      DOCKER_TLS_VERIFY: "1"
+      DOCKER_CERT_PATH: /certs/dave-client
+
+configs:
+  # Minimal allowlist config for authzmtls. No `datasources`
+  authzmtls-config:
+    content: |
+      logging_level: trace
+
+      server:
+        listen_addr: ":80"
+        decision_timeout: 2s
+        metrics_path: /metrics
+
+      allowlist:
+        - /data/allowed
+        # `docker run -v /data/allowed:/mnt ...` -> allowed
+        # `docker run -v /etc:/mnt ...`          -> denied (not listed)
+
+      checks:
+        host_network: allow
+        privileged: allow
+        docker_cp: allow
+        docker_exec: allow
+        unknown_setting: testing
+
+  # *dind* pointing at authzmtls (dockerd's --authorization-plugin)
+  authzmtls-plugin-spec:
+    content: |
+      {"Name": "authzmtls", "Addr": "http://authzmtls:80"}
+
+  # Cert-gen + dockerd-launch script for the `dind` service.
+  dind-entrypoint:
+    content: |
+      #!/bin/sh
+      # Generates a throwaway dev PKI for dockerd's TCP+TLS listener, then execs dockerd.
+      set -eu
+
+      CERT_DIR=/certs
+      CLIENT_DIR="$$CERT_DIR/dave-client"
+      mkdir -p "$$CERT_DIR" "$$CLIENT_DIR"
+      cd "$$CERT_DIR"
+
+      echo "== [dind-entrypoint] generating dev CA + server + client certs =="
+
+      # 1. Self-signed dev CA.
+      openssl req -x509 -newkey rsa:4096 -noenc -days 3650 \
+        -subj "/CN=authzmtls-dev-ca" \
+        -keyout ca-key.pem -out ca-cert.pem
+
+      # 2. Server cert for dockerd's TCP listener - needs a real
+      #    subjectAltName; a bare CN is not accepted by modern TLS clients.
+      openssl req -newkey rsa:4096 -noenc \
+        -subj "/CN=localhost" \
+        -keyout server-key.pem -out server.csr
+      cat > server-ext.cnf <<EOF
+      subjectAltName = DNS:localhost,IP:127.0.0.1
+      extendedKeyUsage = serverAuth
+      EOF
+      openssl x509 -req -in server.csr -CA ca-cert.pem -CAkey ca-key.pem \
+        -CAcreateserial -days 3650 -extfile server-ext.cnf \
+        -out server-cert.pem
+
+      # 3. Client cert - CN=dave,O=example.com is the identity that should
+      #    show up as authzmtls's AuthZReq.User in its logs below.
+      openssl req -newkey rsa:4096 -noenc \
+        -subj "/CN=dave/O=example.com" \
+        -keyout client-key.pem -out client.csr
+      cat > client-ext.cnf <<EOF
+      extendedKeyUsage = clientAuth
+      EOF
+      openssl x509 -req -in client.csr -CA ca-cert.pem -CAkey ca-key.pem \
+        -CAcreateserial -days 3650 -extfile client-ext.cnf \
+        -out client-cert.pem
+
+      # 4. Client cert dir matching Docker CLI's DOCKER_CERT_PATH convention
+      #    (ca.pem/cert.pem/key.pem) - get the names wrong and every
+      #    `docker` call silently needs extra flags.
+      cp ca-cert.pem "$$CLIENT_DIR/ca.pem"
+      cp client-cert.pem "$$CLIENT_DIR/cert.pem"
+      cp client-key.pem "$$CLIENT_DIR/key.pem"
+
+      echo "== [dind-entrypoint] generated cert details =="
+      for f in ca-cert.pem server-cert.pem client-cert.pem; do
+        echo "--- $$f ---"
+        openssl x509 -noout -subject -ext subjectAltName,extendedKeyUsage -in "$$f" 2>/dev/null || true
+      done
+
+      echo "== [dind-entrypoint] starting dockerd (tcp+tls only, no unix socket) =="
+
+      # 5. No unix socket (-H), only tcp+tls - the unix socket bypasses the
+      #    authz plugin entirely, which this sandbox exists to prevent.
+      exec dockerd \
+        --tlsverify \
+        --tlscacert="$$CERT_DIR/ca-cert.pem" \
+        --tlscert="$$CERT_DIR/server-cert.pem" \
+        --tlskey="$$CERT_DIR/server-key.pem" \
+        -H tcp://0.0.0.0:2376 \
+        --authorization-plugin=authzmtls

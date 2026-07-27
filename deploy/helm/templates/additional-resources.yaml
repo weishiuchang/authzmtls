@@ -1,0 +1,5 @@
+{{- range .Values.additionalResources }}
+---
+{{- tpl (toYaml .) $ }}
+...
+{{- end }}

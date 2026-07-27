@@ -1,0 +1,5 @@
+{
+  "Name": "authzmtls",
+  "Addr": "https://authzmtls.internal:443",
+  "TLSConfig": { "CAFile": "/etc/docker/certs.d/authzmtls/ca.pem" }
+}

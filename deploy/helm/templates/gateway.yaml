@@ -1,0 +1,51 @@
+{{- if .Values.gateway.enabled }}
+{{- $tlsEnabled := or .Values.tls.existingSecret (and .Values.tls.cert .Values.tls.key) }}
+{{- $tlsSecretName := .Values.tls.existingSecret | default (printf "%s-tls" (include "authzmtls.fullname" .)) }}
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: {{ include "authzmtls.fullname" . }}
+  labels:
+    {{- include "authzmtls.labels" . | nindent 4 }}
+    {{- with .Values.gateway.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- with .Values.gateway.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  gatewayClassName: {{ .Values.gateway.gatewayClassName }}
+  listeners:
+    - name: {{ if $tlsEnabled }}https{{ else }}http{{ end }}
+      protocol: {{ if $tlsEnabled }}HTTPS{{ else }}HTTP{{ end }}
+      port: {{ if $tlsEnabled }}443{{ else }}80{{ end }}
+      allowedRoutes:
+        namespaces:
+          from: Same
+      {{- if $tlsEnabled }}
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - kind: Secret
+            name: {{ $tlsSecretName }}
+      {{- end }}
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ include "authzmtls.fullname" . }}
+  labels:
+    {{- include "authzmtls.labels" . | nindent 4 }}
+spec:
+  parentRefs:
+    - name: {{ include "authzmtls.fullname" . }}
+  {{- with .Values.gateway.hostnames }}
+  hostnames:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    - backendRefs:
+        - name: {{ include "authzmtls.fullname" . }}
+          port: {{ .Values.service.port }}
+{{- end }}

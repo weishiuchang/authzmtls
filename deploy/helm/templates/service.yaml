@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "authzmtls.fullname" . }}
+  labels:
+    {{- include "authzmtls.labels" . | nindent 4 }}
+  {{- with .Values.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+    - port: {{ .Values.service.port }}
+      targetPort: {{ include "authzmtls.containerPort" . }}
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "authzmtls.selectorLabels" . | nindent 4 }}

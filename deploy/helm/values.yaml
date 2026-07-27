@@ -1,0 +1,185 @@
+image:
+  repository: authzmtls
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+# Docker's authz framework fails closed if this service is unreachable, so
+# 2 replicas (not 1) is the default for HA. Ignored when autoscaling.enabled
+# is true.
+replicas: 2
+
+autoscaling:
+  # Off by default. When enabled, `replicas` above stops applying.
+  enabled: false
+  # Same HA reasoning as the static `replicas` default - routine events
+  # (rollout, node drain, crash) shouldn't drop below 2 live replicas.
+  minReplicas: 2
+  maxReplicas: 3
+  targetCPUUtilizationPercentage: 80
+  targetMemoryUtilizationPercentage: 80
+  # Scaling on authzmtls's own OTel metrics (decision latency, in-flight
+  # calls) instead of plain CPU/memory is a reasonable follow-up once a
+  # metrics adapter is in the cluster.
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 64Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
+
+serviceAccount:
+  create: true
+  annotations: {}
+  # Empty defaults to the fullname template.
+  name: ""
+
+service:
+  type: ClusterIP
+  port: 80
+  annotations: {}
+
+# Prometheus Operator ServiceMonitor. Off by default since it requires the
+# monitoring.coreos.com CRDs to be installed in the cluster.
+serviceMonitor:
+  enabled: false
+  interval: 30s
+  scrapeTimeout: 10s
+  labels: {}
+  # Only consulted when TLS is configured (tls.* below); set true if
+  # server_cert is self-signed or otherwise not in Prometheus's trust store.
+  insecureSkipVerify: false
+
+# Gateway API (gateway.networking.k8s.io) Gateway + HTTPRoute, as an
+# alternative/addition to the plain Service above. Off by default since it
+# requires the Gateway API CRDs and a GatewayClass to already exist in the
+# cluster. Listener protocol/TLS follows tls.* below, same as the Deployment
+# probes: HTTP when tls.* is unset, HTTPS terminating with that same
+# certificate when it's set - so this assumes plaintext from the Gateway to
+# the pod on that hop, exactly like the probe's HTTPS-vs-HTTP assumption
+# already does.
+gateway:
+  enabled: false
+  # Must name a GatewayClass already installed in the cluster.
+  # Example: gatewayClassName: envoy-gateway
+  gatewayClassName: ""
+  # HTTPRoute hostname match. Example:
+  # hostnames:
+  #   - authzmtls.internal.example.com
+  hostnames: []
+  annotations: {}
+  labels: {}
+
+# TLS between dockerd and authzmtls (unset = plain HTTP)
+tls:
+  existingSecret: ""
+  cert: ""
+  key: ""
+
+# Both probes hit /Plugin.Activate (Docker's plugin discovery handshake)
+probes:
+  path: /Plugin.Activate
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  timeoutSeconds: 2
+  failureThreshold: 3
+
+# readOnlyRootFilesystem is safe since the process only reads config/TLS
+# material and never writes to disk.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+podAnnotations: {}
+podLabels: {}
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# config: rendered directly into /etc/authzmtls/config.yaml, matching
+# internal/config/config.go's schema field-for-field - this whole block is
+# toYaml'd then tpl'd (so e.g. `{{ .Release.Namespace }}` inside a value
+# here gets evaluated) and stored in a Secret, not a ConfigMap, since
+# datasources[].bind_pw below is a plaintext credential. allowlist/
+# datasources/checks.* are config-file-only by design (no env/CLI
+# override), which is why they live here rather than as Deployment env
+# vars.
+#
+# Because this whole block is passed through toYaml/tpl verbatim, every
+# field must be spelled exactly as config.yaml expects it - there's no
+# chart-side validation or defaulting beyond what internal/config itself
+# does at startup.
+config:
+  logging_level: info
+
+  server:
+    listen_addr: ":80"
+    metrics_path: /metrics
+    decision_timeout: 2s
+    # server_cert/server_key: set both to enable TLS, pointing at wherever
+    # the cert ends up mounted - e.g. /etc/authzmtls/tls/tls.crt and
+    # tls.key if using tls.cert/tls.key or tls.existingSecret below (this
+    # chart always mounts that Secret at /etc/authzmtls/tls).
+
+  allowlist: []
+  # Example:
+  # allowlist:
+  #   - /data
+  #   - /srv/app-data
+  #   - /home/$USER/projects
+  #   - /remote/$GROUP
+
+  # Each entry is a full datasource block (name/type/cache_ttl plus
+  # whatever fields that `type` needs, e.g. ldap's
+  # url/bind_dn/bind_pw/user_search/...), passed through verbatim -
+  # including bind_pw as plaintext. This is why the rendered config lives
+  # in a Secret: restrict who can `helm get values`/read this Secret same
+  # as any other credential.
+  #
+  # Example:
+  # datasources:
+  #   - name: ad01
+  #     type: ldap
+  #     cache_ttl: 10m
+  #     url: ldaps://activedirectory01.example.com
+  #     bind_dn: readonly_acct
+  #     bind_pw: readonly_pwd
+  #     pool_size: 8
+  #     user_search:
+  #       base_dn: "dc=example,dc=com"
+  #       filter: "(&(objectCategory=person)(objectClass=user)(altSecurityIdentities=X509:<S>$IDENTITY))"
+  #       attribute: sAMAccountName
+  #     group_search:
+  #       base_dn: "ou=groups,dc=example,dc=com"
+  #       filter: "(&(objectClass=group)(member:1.2.840.113556.1.4.1941:=$IDENTITY_DN))"
+  #       attribute: cn
+  datasources: []
+
+  # list of users as retrieved from data sources to treat as admin: always allow all docker commands
+  admin_users: []
+  # list of groups as retrieved from data sources who's users are admins: always allow all docker commands
+  admin_groups: []
+
+  checks:
+    host_network: allow
+    privileged: allow
+    # docker_cp/docker_exec: allowing these permits cross-user file/shell
+    # access - see README's "Enforcement" table before changing either.
+    docker_cp: allow
+    docker_exec: allow
+
+# Additional resources for deployment.
+# tpl supported, so `{{ Values.... }}` can be used.
+additionalResources: {}

@@ -1,0 +1,24 @@
+# Build artifacts
+/authzmtls
+/dist/
+/bin/
+
+# Go tooling
+*.test
+*.out
+coverage.*
+
+# Local dev TLS material (scripts/gen-certs.sh output, deploy/dev-docker-compose.yaml
+# generates its own inside the dind container and never writes these to disk, but
+# keep this repo-wide as a safety net for anything generated locally too).
+*.pem
+*.key
+*.crt
+*.csr
+/certs/
+temp/
+
+# Editor/OS cruft
+.claude
+.DS_Store
+*.swp

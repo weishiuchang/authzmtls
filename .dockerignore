@@ -1,0 +1,16 @@
+# deny all by default
+*
+
+# callout allows
+!LICENSE.txt
+!AWESOME.md
+!METRICS.md
+!Makefile
+!README.md
+!benchmarks
+!cmd
+!deploy
+!docs
+!go.mod
+!go.sum
+!internal

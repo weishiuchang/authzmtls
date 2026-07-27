@@ -1,0 +1,40 @@
+{{/*
+Standard resource-based (CPU/memory) autoscaling/v2 HPA, gated behind
+autoscaling.enabled (default false). Not yet extended to authzmtls's own
+OTel metrics - that needs a metrics adapter in the cluster first.
+
+See templates/deployment.yaml: spec.replicas is omitted from the Deployment
+when autoscaling.enabled is true, so upgrades never fight this HPA.
+*/}}
+{{- if .Values.autoscaling.enabled }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "authzmtls.fullname" . }}
+  labels:
+    {{- include "authzmtls.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "authzmtls.fullname" . }}
+  minReplicas: {{ .Values.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.autoscaling.maxReplicas }}
+  metrics:
+    {{- if .Values.autoscaling.targetCPUUtilizationPercentage }}
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.autoscaling.targetCPUUtilizationPercentage }}
+    {{- end }}
+    {{- if .Values.autoscaling.targetMemoryUtilizationPercentage }}
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.autoscaling.targetMemoryUtilizationPercentage }}
+    {{- end }}
+{{- end }}

@@ -1,0 +1,26 @@
+{{- if .Values.serviceMonitor.enabled }}
+{{- $tlsEnabled := or .Values.tls.existingSecret (and .Values.tls.cert .Values.tls.key) }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "authzmtls.fullname" . }}
+  labels:
+    {{- include "authzmtls.labels" . | nindent 4 }}
+    {{- with .Values.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "authzmtls.selectorLabels" . | nindent 6 }}
+  endpoints:
+    - port: http
+      path: {{ .Values.config.server.metrics_path }}
+      interval: {{ .Values.serviceMonitor.interval }}
+      scrapeTimeout: {{ .Values.serviceMonitor.scrapeTimeout }}
+      scheme: {{ if $tlsEnabled }}https{{ else }}http{{ end }}
+      {{- if $tlsEnabled }}
+      tlsConfig:
+        insecureSkipVerify: {{ .Values.serviceMonitor.insecureSkipVerify }}
+      {{- end }}
+{{- end }}
