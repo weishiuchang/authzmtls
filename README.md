@@ -18,6 +18,23 @@ mTLS environment by checking all docker mount commands against an allow list.
    `/AuthZPlugin.AuthZReq`/`AuthZRes` before and after each API request for
    allow/deny responses.
 
+### Docker TLS
+
+Docker CLI users will need to enable TLS:
+
+```bash
+export DOCKER_HOST=tcp://127.0.0.1:2376
+export DOCKER_TLS_VERIFY=1
+export DOCKER_CERT_PATH=$HOME/certs
+
+$ ls -1 $HOME/certs/
+ca.pem
+certs.pem
+key.pem
+```
+
+This works with docker compose as well.
+
 ### Docker plugin
 
 On the docker daemon add a `/etc/docker/plugins/authzmtls.json`:
@@ -209,6 +226,12 @@ has one job:
 ```
 helm install authzmtls deploy/helm --values my-values.yaml
 ```
+
+## Releases
+
+authzmtls containers are available at ghcr.io/weishiuchang/authzmtls:shortsha
+
+Tags will always have the git short sha or tagged release version.
 
 ## Security notes
 
