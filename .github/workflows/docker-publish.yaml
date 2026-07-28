@@ -6,21 +6,10 @@
 # these credentials.
 #
 # Publishes to GHCR (needs only the built-in GITHUB_TOKEN; hosts both
-# images and OCI Helm charts under one registry/credential):
+# images and OCI Helm charts):
 #   Images: ghcr.io/<owner>/authzmtls:<shortsha>[-debug] (every push),
 #     :<tag> and :latest (tags on the default branch only)
-#   Chart:  oci://ghcr.io/<owner>/charts/authzmtls:<version> and :latest
-#
-# Helm OCI push requires a strict-SemVer `version`, so "latest" can't be
-# pushed as a chart version directly - it's pushed under its real version,
-# then aliased to `:latest` via `oras tag` (bypasses Helm's SemVer check).
-#
-# GHCR requires an all-lowercase path, but github.repository_owner
-# preserves display case, so each job lowercases it via a shell step.
-#
-# Two triggers (branch push, tag push) live under one `push:` block since
-# Actions allows only one top-level `on:` per workflow; each job's `if:`
-# then restricts it to the trigger it cares about.
+#   Chart:  oci://ghcr.io/<owner>/charts/authzmtls:<version>
 
 name: docker-publish
 
@@ -35,18 +24,13 @@ permissions:
 
 env:
   IMAGE_NAME: authzmtls
-  # Shared cache scope so Job 2 reuses Job 1's builder-stage cache.
   BUILDX_CACHE_SCOPE: authzmtls-builder
 
 jobs:
-  # ---------------------------------------------------------------------
-  # Job 1: every commit, any branch - builds + pushes shortsha images.
-  # Skipped on tag pushes; the tagged commit was already built via its
-  # branch push.
-  # ---------------------------------------------------------------------
+  # every commit, any branch - builds + pushes shortsha images.
   publish-shortsha:
     name: Build & push shortsha images
-    if: startsWith(github.ref, 'refs/heads/')
+    if: github.ref_type == 'branch'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -61,7 +45,7 @@ jobs:
       # Drives -X main.version=... (see deploy/Dockerfile's VERSION arg).
       # Computed once and reused for both builds below so they share the
       # same VERSION value - the builder-stage cache-sharing this job
-      # relies on requires identical build-args, not just identical source.
+      # relies on requires identical build-args
       - name: Derive short SHA for build version
         id: version
         run: echo "value=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
@@ -81,6 +65,8 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/${{ steps.vars.outputs.owner }}/${{ env.IMAGE_NAME }}
+          flavor: |
+            prefix=
           tags: |
             type=sha,format=short
 
@@ -90,7 +76,7 @@ jobs:
         with:
           images: ghcr.io/${{ steps.vars.outputs.owner }}/${{ env.IMAGE_NAME }}
           flavor: |
-            suffix=-debug,onlatest=false
+            prefix=,suffix=-debug,onlatest=false
           tags: |
             type=sha,format=short
 
@@ -122,15 +108,14 @@ jobs:
           cache-from: type=gha,scope=${{ env.BUILDX_CACHE_SCOPE }}
           cache-to: type=gha,mode=max,scope=${{ env.BUILDX_CACHE_SCOPE }}
 
-  # ---------------------------------------------------------------------
-  # Job 2: tag pushes only, gated to tags whose commit is actually on the
+  # tag pushes only, gated to tags whose commit is actually on the
   # default branch (a tag on a feature branch must never become :latest).
-  # Steps are skipped, not failed, when the gate check fails.
-  # ---------------------------------------------------------------------
-  publish-release:
-    name: Build & push tagged + latest images, publish Helm chart
-    if: startsWith(github.ref, 'refs/tags/')
+  check-tag-ancestor:
+    name: Verify tag is on the default branch
+    if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
+    outputs:
+      is_ancestor: ${{ steps.gate.outputs.is_ancestor }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -149,37 +134,45 @@ jobs:
             echo "::notice::${{ github.ref_name }} does not point at a commit on '${default_branch}' - skipping image/chart publish."
           fi
 
+  # builds only when check-tag-ancestor confirms the tag is on the
+  # default branch.
+  publish-release:
+    name: Build & push tagged + latest images, publish Helm chart
+    needs: check-tag-ancestor
+    if: needs.check-tag-ancestor.outputs.is_ancestor == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Lowercase image owner
-        if: steps.gate.outputs.is_ancestor == 'true'
         id: vars
         run: |
           owner="${{ github.repository_owner }}"
           echo "owner=${owner,,}" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
-        if: steps.gate.outputs.is_ancestor == 'true'
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to GHCR (docker)
-        if: steps.gate.outputs.is_ancestor == 'true'
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # One build, two tags (release only - debug stays shortsha-only,
-      # published by Job 1). Reuses Job 1's builder-stage cache, though the
-      # final compile layer itself still misses cache here: VERSION differs
-      # (the tag, not Job 1's shortsha), so -X main.version=... genuinely
-      # changed and must recompile - only that one layer, not go mod
-      # download/deps.
+      - name: Determine chart version from tag
+        id: chart-version
+        run: |
+          tag="${{ github.ref_name }}"
+          echo "app_version=${tag}" >> "$GITHUB_OUTPUT"
+          echo "chart_version=${tag#v}" >> "$GITHUB_OUTPUT"
+
+      # Three image tags on release. Debug stays shortsha-only.
       #
-      # VERSION is the tag verbatim (e.g. "v1.2.3", not "1.2.3"), matching
-      # Chart.yaml's app-version below - the binary's --version and the
-      # chart's app-version stay the same literal string.
+      # The chart_version tag (e.g. "1.2.3", stripped of "v") is what the
+      # chart's values.yaml image.tag falls back to (.Chart.Version).
       - name: Build & push tag + latest images
-        if: steps.gate.outputs.is_ancestor == 'true'
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -188,69 +181,33 @@ jobs:
           push: true
           tags: |
             ghcr.io/${{ steps.vars.outputs.owner }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}
+            ghcr.io/${{ steps.vars.outputs.owner }}/${{ env.IMAGE_NAME }}:${{ steps.chart-version.outputs.chart_version }}
             ghcr.io/${{ steps.vars.outputs.owner }}/${{ env.IMAGE_NAME }}:latest
           build-args: VERSION=${{ github.ref_name }}
           cache-from: type=gha,scope=${{ env.BUILDX_CACHE_SCOPE }}
           cache-to: type=gha,mode=max,scope=${{ env.BUILDX_CACHE_SCOPE }}
 
       - name: Set up Helm
-        if: steps.gate.outputs.is_ancestor == 'true'
         uses: azure/setup-helm@v4
         with:
-          # Pinned (not "latest") to the version this workflow's
-          # oras-tag-based :latest mechanism was validated against.
           version: 'v3.16.4'
 
-      - name: Set up ORAS
-        if: steps.gate.outputs.is_ancestor == 'true'
-        uses: oras-project/setup-oras@v1
-
-      - name: Determine chart version from tag
-        if: steps.gate.outputs.is_ancestor == 'true'
-        id: chart-version
-        run: |
-          tag="${{ github.ref_name }}"
-          echo "app_version=${tag}" >> "$GITHUB_OUTPUT"
-          echo "chart_version=${tag#v}" >> "$GITHUB_OUTPUT"
-
       - name: Log in to GHCR (helm)
-        if: steps.gate.outputs.is_ancestor == 'true'
         run: |
           helm registry login ghcr.io \
             -u ${{ github.actor }} \
             -p ${{ secrets.GITHUB_TOKEN }}
 
-      # The git tag drives the chart version, not Chart.yaml's
-      # version/appVersion (placeholders only) - `version` must be strict
-      # SemVer, `app-version` keeps the tag verbatim.
+      # The git semver tag sets the chart version.
       - name: Package Helm chart
-        if: steps.gate.outputs.is_ancestor == 'true'
         run: |
           helm package deploy/helm/authzmtls \
             --version "${{ steps.chart-version.outputs.chart_version }}" \
             --app-version "${{ steps.chart-version.outputs.app_version }}" \
             --destination /tmp/chart-dist
 
-      - name: Push Helm chart (release version)
-        if: steps.gate.outputs.is_ancestor == 'true'
+      - name: Push Helm chart
         run: |
           helm push \
             "/tmp/chart-dist/${{ env.IMAGE_NAME }}-${{ steps.chart-version.outputs.chart_version }}.tgz" \
             "oci://ghcr.io/${{ steps.vars.outputs.owner }}/charts"
-
-      # Helm OCI requires strict SemVer, so "latest" can't be pushed as a
-      # chart version directly - `oras tag` aliases a second tag onto the
-      # same manifest instead.
-      - name: Log in to GHCR (oras)
-        if: steps.gate.outputs.is_ancestor == 'true'
-        run: |
-          oras login ghcr.io \
-            -u ${{ github.actor }} \
-            -p ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Alias Helm chart as :latest
-        if: steps.gate.outputs.is_ancestor == 'true'
-        run: |
-          oras tag \
-            "ghcr.io/${{ steps.vars.outputs.owner }}/charts/${{ env.IMAGE_NAME }}:${{ steps.chart-version.outputs.chart_version }}" \
-            latest

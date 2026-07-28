@@ -229,9 +229,9 @@ helm install authzmtls deploy/helm --values my-values.yaml
 
 ## Releases
 
-authzmtls containers are available at ghcr.io/weishiuchang/authzmtls:shortsha
+authzmtls containers are available at ghcr.io/weishiuchang/authzmtls:`version`
 
-Tags will always have the git short sha or tagged release version.
+authzmtls helm charts are available at oci://ghcr.io/weishiuchang/charts/authzmtls:`version`
 
 ## Security notes
 

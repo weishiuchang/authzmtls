@@ -1,5 +1,5 @@
 image:
-  repository: authzmtls
+  repository: ghcr.io/weishiuchang/authzmtls
   tag: ""
   pullPolicy: IfNotPresent
 
