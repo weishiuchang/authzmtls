@@ -233,6 +233,16 @@ authzmtls containers are available at ghcr.io/weishiuchang/authzmtls:`version`
 
 authzmtls helm charts are available at oci://ghcr.io/weishiuchang/charts/authzmtls:`version`
 
+## Contributing
+
+Pull requests with code are always welcome.
+
+I am especially looking for additional data sources.
+
+`$IDENTITY` is pulled from the incoming user docker request and provided to the data source plugin.
+The data source plugin is then expected to produce any variables for matching in allow list paths.
+The included ldap plugin produces `$USER` and `$GROUP`, for example.
+
 ## Security notes
 
 - Docker's plugin framework fails closed if this service is unreachable, so
