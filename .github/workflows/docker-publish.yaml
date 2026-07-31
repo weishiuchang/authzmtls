@@ -65,20 +65,16 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/${{ steps.vars.outputs.owner }}/${{ env.IMAGE_NAME }}
-          flavor: |
-            prefix=
           tags: |
-            type=sha,format=short
+            type=sha,format=short,prefix=
 
       - name: Derive debug image tag (shortsha-debug)
         id: meta-debug
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/${{ steps.vars.outputs.owner }}/${{ env.IMAGE_NAME }}
-          flavor: |
-            prefix=,suffix=-debug,onlatest=false
           tags: |
-            type=sha,format=short
+            type=sha,format=short,prefix=,suffix=-debug
 
       # Shares the builder-stage cache so the debug build only redoes the
       # final COPY/USER layers, not a full recompile.
