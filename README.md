@@ -4,6 +4,9 @@ Running docker on workstations across your enterprise is scary enough.  This
 docker authz service helps manage the risks you are willing to tolerate in your
 mTLS environment by checking all docker mount commands against an allow list.
 
+And with your docker listening on TLS instead of `/var/run/docker.socket` **you
+no longer need to add users to the `docker` group**.
+
 [authorization plugin](https://docs.docker.com/engine/extend/plugins_authorization/)
 
 ## How it works
